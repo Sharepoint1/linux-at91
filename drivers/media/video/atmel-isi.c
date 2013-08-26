@@ -121,6 +121,7 @@ static int configure_geometry(struct atmel_isi *isi, u32 width,
 			u32 height, enum v4l2_mbus_pixelcode code)
 {
 	u32 cfg2, cr;
+	isi->use_preview = false;
 
 	switch (code) {
 	/* YUV, including grey */
@@ -140,6 +141,10 @@ static int configure_geometry(struct atmel_isi *isi, u32 width,
 		cr = ISI_CFG2_YCC_SWAP_DEFAULT;
 		break;
 	/* RGB, TODO */
+	case V4L2_MBUS_FMT_RGB565_2X8_LE:
+		cr = ISI_CFG2_COL_SPACE_RGB | ISI_CFG2_RGB_MODE_565 | ISI_CFG2_RGB_CFG_MODE_3;
+		isi->use_preview = true;
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -385,9 +390,11 @@ static void start_dma(struct atmel_isi *isi, struct frame_buffer *buffer)
 			ISI_SR_CXFR_DONE | ISI_SR_PXFR_DONE);
 
 	/* Check if already in a frame */
-	if (isi_readl(isi, ISI_STATUS) & ISI_CTRL_CDC) {
-		dev_err(isi->icd->parent, "Already in frame handling.\n");
-		return;
+	if (!isi->use_preview) {
+		if (isi_readl(isi, ISI_STATUS) & ISI_CTRL_CDC) {
+			dev_err(isi->icd->parent, "Already in frame handling.\n");
+			return;
+		}
 	}
 
 	if (!isi->use_preview) {
@@ -403,8 +410,12 @@ static void start_dma(struct atmel_isi *isi, struct frame_buffer *buffer)
 	/* Enable linked list */
 	cfg1 |= isi->pdata->frate | ISI_CFG1_DISCR;
 
-	/* Enable codec path and ISI */
-	ctrl = ISI_CTRL_CDC | ISI_CTRL_EN;
+	/* Enable ISI */
+	ctrl = ISI_CTRL_EN;
+
+	if (!isi->use_preview)
+		ctrl |= ISI_CTRL_CDC;	/* Enable codec path */
+
 	isi_writel(isi, ISI_CTRL, ctrl);
 	isi_writel(isi, ISI_CFG1, cfg1);
 }
@@ -491,16 +502,18 @@ static int stop_streaming(struct vb2_queue *vq)
 	}
 	spin_unlock_irq(&isi->lock);
 
-	timeout = jiffies + FRAME_INTERVAL_MILLI_SEC * HZ;
-	/* Wait until the end of the current frame. */
-	while ((isi_readl(isi, ISI_STATUS) & ISI_CTRL_CDC) &&
-			time_before(jiffies, timeout))
-		msleep(1);
+	if (!isi->use_preview) {
+		timeout = jiffies + FRAME_INTERVAL_MILLI_SEC * HZ;
+		/* Wait until the end of the current frame. */
+		while ((isi_readl(isi, ISI_STATUS) & ISI_CTRL_CDC) &&
+				time_before(jiffies, timeout))
+			msleep(1);
 
-	if (time_after(jiffies, timeout)) {
-		dev_err(icd->parent,
-			"Timeout waiting for finishing codec request\n");
-		return -ETIMEDOUT;
+		if (time_after(jiffies, timeout)) {
+			dev_err(icd->parent,
+				"Timeout waiting for finishing codec request\n");
+			return -ETIMEDOUT;
+		}
 	}
 
 	/* Disable interrupts */
@@ -657,6 +670,14 @@ static const struct soc_mbus_pixelfmt isi_camera_formats[] = {
 		.order			= SOC_MBUS_ORDER_LE,
 		.layout			= SOC_MBUS_LAYOUT_PACKED,
 	},
+	{
+		.fourcc			= V4L2_PIX_FMT_RGB565,
+		.name			= "RGB565",
+		.bits_per_sample	= 8,
+		.packing		= SOC_MBUS_PACKING_2X8_PADHI,
+		.order			= SOC_MBUS_ORDER_LE,
+		.layout			= SOC_MBUS_LAYOUT_PACKED,
+	},
 };
 
 /* This will be corrected as we get more formats */
@@ -751,6 +772,16 @@ static int isi_camera_get_formats(struct soc_camera_device *icd,
 			xlate++;
 			dev_dbg(icd->parent, "Providing format %s using code %d\n",
 				isi_camera_formats[0].name, code);
+		}
+		break;
+	case V4L2_MBUS_FMT_RGB565_2X8_LE:
+		formats++;
+		if (xlate) {
+			xlate->host_fmt	= &isi_camera_formats[1];
+			xlate->code	= code;
+			xlate++;
+			dev_dbg(icd->parent, "Providing format %s using code %d\n",
+				isi_camera_formats[1].name, code);
 		}
 		break;
 	default:
