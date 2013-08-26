@@ -89,6 +89,7 @@ struct atmel_isi {
 	u32				fb_descriptors_phys;
 	struct				list_head dma_desc_head;
 	struct isi_dma_desc		dma_desc[MAX_BUFFER_NUM];
+	bool				use_preview;
 
 	struct completion		complete;
 	/* ISI peripherial clock */
@@ -157,6 +158,15 @@ static int configure_geometry(struct atmel_isi *isi, u32 width,
 			& ISI_CFG2_IM_VSIZE_MASK;
 	isi_writel(isi, ISI_CFG2, cfg2);
 
+	if (isi->use_preview) {
+		cr = ((width - 1) << ISI_PSIZE_PREV_HSIZE_OFFSET) &
+			ISI_PSIZE_PREV_HSIZE_MASK;
+		cr |= ((height - 1) << ISI_PSIZE_PREV_VSIZE_OFFSET)
+			& ISI_PSIZE_PREV_VSIZE_MASK;
+		isi_writel(isi, ISI_PSIZE, cr);
+		isi_writel(isi, ISI_PDECF, 16);	/* no down sample */
+	}
+
 	return 0;
 }
 
@@ -178,11 +188,19 @@ static irqreturn_t atmel_isi_handle_streaming(struct atmel_isi *isi)
 		/* start next dma frame. */
 		isi->active = list_entry(isi->video_buffer_list.next,
 					struct frame_buffer, list);
-		isi_writel(isi, ISI_DMA_C_DSCR,
-			isi->active->p_dma_desc->fbd_phys);
-		isi_writel(isi, ISI_DMA_C_CTRL,
-			ISI_DMA_CTRL_FETCH | ISI_DMA_CTRL_DONE);
-		isi_writel(isi, ISI_DMA_CHER, ISI_DMA_CHSR_C_CH);
+		if (!isi->use_preview) {
+			isi_writel(isi, ISI_DMA_C_DSCR,
+				isi->active->p_dma_desc->fbd_phys);
+			isi_writel(isi, ISI_DMA_C_CTRL,
+				ISI_DMA_CTRL_FETCH | ISI_DMA_CTRL_DONE);
+			isi_writel(isi, ISI_DMA_CHER, ISI_DMA_CHSR_C_CH);
+		} else {
+			isi_writel(isi, ISI_DMA_P_DSCR,
+				isi->active->p_dma_desc->fbd_phys);
+			isi_writel(isi, ISI_DMA_P_CTRL,
+				ISI_DMA_CTRL_FETCH | ISI_DMA_CTRL_DONE);
+			isi_writel(isi, ISI_DMA_CHER, ISI_DMA_CHSR_P_CH);
+		}
 	}
 	return IRQ_HANDLED;
 }
@@ -215,7 +233,7 @@ static irqreturn_t isi_interrupt(int irq, void *dev_id)
 			wake_up_interruptible(&isi->vsync_wq);
 			ret = IRQ_HANDLED;
 		}
-		if (likely(pending & ISI_SR_CXFR_DONE))
+		if (likely(pending & ISI_SR_CXFR_DONE) || likely(pending & ISI_SR_PXFR_DONE))
 			ret = atmel_isi_handle_streaming(isi);
 	}
 
@@ -372,9 +390,15 @@ static void start_dma(struct atmel_isi *isi, struct frame_buffer *buffer)
 		return;
 	}
 
-	isi_writel(isi, ISI_DMA_C_DSCR, buffer->p_dma_desc->fbd_phys);
-	isi_writel(isi, ISI_DMA_C_CTRL, ISI_DMA_CTRL_FETCH | ISI_DMA_CTRL_DONE);
-	isi_writel(isi, ISI_DMA_CHER, ISI_DMA_CHSR_C_CH);
+	if (!isi->use_preview) {
+		isi_writel(isi, ISI_DMA_C_DSCR, buffer->p_dma_desc->fbd_phys);
+		isi_writel(isi, ISI_DMA_C_CTRL, ISI_DMA_CTRL_FETCH | ISI_DMA_CTRL_DONE);
+		isi_writel(isi, ISI_DMA_CHER, ISI_DMA_CHSR_C_CH);
+	} else {
+		isi_writel(isi, ISI_DMA_P_DSCR, buffer->p_dma_desc->fbd_phys);
+		isi_writel(isi, ISI_DMA_P_CTRL, ISI_DMA_CTRL_FETCH | ISI_DMA_CTRL_DONE);
+		isi_writel(isi, ISI_DMA_CHER, ISI_DMA_CHSR_P_CH);
+	}
 
 	/* Enable linked list */
 	cfg1 |= isi->pdata->frate | ISI_CFG1_DISCR;
@@ -518,6 +542,9 @@ static int isi_camera_init_videobuf(struct vb2_queue *q,
 
 	return vb2_queue_init(q);
 }
+
+#define pixfmtstr(x) (x) & 0xff, ((x) >> 8) & 0xff, ((x) >> 16) & 0xff, \
+	((x) >> 24) & 0xff
 
 static int isi_camera_set_fmt(struct soc_camera_device *icd,
 			      struct v4l2_format *f)
