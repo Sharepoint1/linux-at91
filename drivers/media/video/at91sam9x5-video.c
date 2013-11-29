@@ -912,9 +912,22 @@ static int at91sam9x5_video_vb_queue_setup(struct vb2_queue *q,
 	 * XXX: is that allowed and done right?
 	 * XXX: format-dependant
 	 */
-	sizes[0] = pix->width * pix->height +
-		ALIGN(pix->width, 2) * ALIGN(pix->height, 2) / 2 +
-		9 * 32 + 128;
+	switch(pix->pixelformat) {
+		case V4L2_PIX_FMT_YUV420:
+			sizes[0] = pix->width * pix->height +
+				ALIGN(pix->width, 2) * ALIGN(pix->height, 2) / 2 +
+				9 * 32 + 128;
+			break;
+		case V4L2_PIX_FMT_UYVY:
+		case V4L2_PIX_FMT_YUYV:
+			sizes[0] = pix->width * pix->height +
+			ALIGN(pix->width, 2) * ALIGN(pix->height, 2) +
+			9 * 32 + 128;
+			break;
+		default:
+			return -EINVAL;
+	}
+
 	priv->plane_size[0] = sizes[0];
 
 	alloc_ctxs[0] = priv->alloc_ctx;
