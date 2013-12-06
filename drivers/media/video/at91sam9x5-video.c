@@ -1447,7 +1447,7 @@ static int at91sam9x5_video_register(struct at91sam9x5_video_priv *priv,
 	(void)at91sam9x5_video_read32(priv, REG_HEOISR);
 
 	/* set maximal bursting */
-	at91sam9x5_video_write32(priv, REG_HEOCFG0, 0x1 |
+	at91sam9x5_video_write32(priv, REG_HEOCFG0, 
 			REG_HEOCFG0_BLEN_INCR16 |
 			REG_HEOCFG0_BLENUV_INCR16);
 
